@@ -1,0 +1,211 @@
+---
+title: "Plotly Project"
+author: "Darrell Gerber"
+date: "9/30/2021"
+output: ioslides_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Project Instructions
+
+"Create a web page presentation using R Markdown that features a plot
+created with Plotly. Host your webpage on either GitHub Pages, RPubs, or
+NeoCities. Your webpage must contain the date that you created the
+document, and it must contain a plot created with Plotly. We would love
+to see you show off your creativity! "
+
+## Review Criteria
+
+The rubric contains the following two questions:
+
+1.  Does the web page feature a date and is this date less than two
+    months before the date that you're grading this assignment?
+2.  Is the web page a presentation and does it feature an interactive plot
+that appears to have been created with Plotly?
+
+# Project Description
+
+I read an article* showing an example of storytelling using ggplot2 in R. In this project, I'll reproduce the first graph using plotly, instead.  
+  
+The article tells the political tale of Presidential Approval Ratings with a combined graph and 4 individual graphs. I will reproduce the combined graph.  
+ * https://medium.com/analytics-vidhya/storytelling-with-your-graphs-in-r-using-ggplot2-f9133c5cc457
+ 
+## Note to Reviewers
+- Jump to the final slide to review the project
+- The remainder of the slides show how I got the final graph using plotly
+
+## Data
+Luckily, the author provides the data used in a Github archive (https://github.com/danderson222/storytelling-with-graphs-in-r). Download the two data sets and combine them into a single data frame.
+
+(NOTE: All of the data wrangling comes from the article and is not my original work. This is a means to get to the point of producing plotly graphs for the project.)
+
+## Gathering and Loading the Data
+```{r loading, message=FALSE}
+if(!require("readxl")) install.packages("readxl") 
+if(!require("tidyverse")) install.packages("tidyverse") 
+if(!require("janitor")) install.packages("janitor") 
+if(!require("ggsci")) install.packages("ggsci") # Provides awesome color palettes
+
+# Used a function found on stackoverflow to combine all the different sheets of an excel file into a list 
+read_excel_allsheets <- function(filename, tibble = TRUE) {
+  sheets <- readxl::excel_sheets(filename)
+  x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
+  if(!tibble) x <- lapply(x, as.data.frame)
+  names(x) <- sheets
+  x
+}
+# Combine the different sheets into one list of 13 dataframes
+data.list <- read_excel_allsheets("data/PrevPresidentApproval.xlsx")
+# Download the separate Trump approval dataset
+trump.approval <- read.csv("data/TrumpApproval.csv")
+```
+
+## Data Manipulation 1
+```{r presidentnames}
+# Create a list with all the president's names
+pres.names <- list("Obama", "BushJr", "Clinton", "BushSr", "Reagan", 
+                   "Carter", "Ford", "Nixon", "Johnson", "Kennedy",
+                   "Eisenhower", "Truman", "Roosevelt")
+# Apply the list to each dataframe in the original excel list
+# This makes up for the sheet names, which originally had the president names
+# the Map function applies cbind to each dataframe of the list
+data.list <- Map(cbind, data.list, President = pres.names) 
+
+# The Janitor package helps us clean the names, from which we select all the columns except for the polling start date (taking the end date instead). Then we rename the columns with the rename() function
+df <- janitor::clean_names(bind_rows(data.list)) %>%
+  select(-start_date) %>%
+  rename(date = end_date, approval = approving, disapproval = disapproving, unsure = unsure_no_data) 
+# We need to change the value from POSIXct to Date
+df$date <- as.Date.POSIXct(df$date) 
+```  
+
+## Data Manipulation - Trump
+```{r trumpcleanup}
+library(dplyr)
+# Now let's clean the trump dataset to match the others and combine it into a new dataframe
+# I always create new dataframes in case I want to re-access the earlier data without loading it all in again
+trump.approval <- trump.approval %>% 
+  # I chose to take the all adults category as it is more representative of the country
+  filter(subgroup=="Adults") %>% 
+  select(modeldate, approve_estimate, disapprove_estimate) %>%
+    # Create an unsure column
+  mutate(unsure =(100 - (approve_estimate + disapprove_estimate))) %>% 
+    # rename the other columns  
+    rename(date = modeldate, approval = approve_estimate, disapproval = disapprove_estimate) %>% 
+
+  mutate(president="Trump")
+ # Change the date column from character to date format
+trump.approval$date <- as.Date.character(trump.approval$date,"%m/%d/%Y")
+df2 <- rbind(df, trump.approval) # Combine the data into a new dataframe df2
+```
+
+## Adding Presidential terms  
+```{r terms1}
+# To properly graph these presidents together we need to create a separate vector with the term dates for each president
+# To do this we group by the president, arrange the data by the date of the polling and use the slice function to cut off the first polling entry, which is likely in their first year of presidency. Then select the two columns we need (president & date)
+term.dates <- df2 %>%
+  group_by(president) %>%
+  arrange(date) %>%
+  slice(1) %>% 
+  select(president, date)
+# Every president starts on January 20th, so grab the year of their first poll and change the term.date start to January 20th
+term.dates$term.start <- paste0(substring(term.dates$date,1,4), "-01-20")
+```
+## Adding Presidential terms - Exceptions
+```{r terms2}
+# But...note the three exceptions to this rule:
+# Gerald Ford took over the August 9th, Truman on April 12th, and Johnson on November 22nd after Kennedy was assassinated
+term.dates[6,3] <- "1974-08-09"
+term.dates[7,3] <- "1963-11-22"
+term.dates[13,3] <- "1945-04-12"
+# Get rid of the date column
+term.dates <- term.dates[,-2]
+# Merge the term.start into the main dataframe using the merge function
+df2 <- merge(df2, term.dates, by = "president") 
+# Turn the term.start into the date class
+df2$term.start <- as.Date.character(df2$term.start)
+# Calculate the number of days in office, which will be relevant for later work!
+df2$days_in_office <- df2$date - df2$term.start 
+```
+
+## Create the main plot
+```{r combinedgraph, message=FALSE}
+library(plotly)
+# For colors I use the simpsons palette from the ggsci package as you need a lot of colours for 14 different presidents!
+my_colors <- pal_simpsons("springfield")(16)
+fontTitle <- list(family="Arial Black", size=16 )
+fontAxis <- list(family="Arial Black", size=14 )
+combined.plot <- df2 %>% plot_ly(x=~date, y = ~approval,
+                         type="scatter", mode="lines+markers",
+                         color=~as.factor(president),
+                         colors=my_colors,
+                         text=~paste("President:", president,'<br>Approval:', approval)
+                         ) 
+```
+## Add the titles and axis labels
+```{r}
+fontTitle <- list(family="Arial Black", size=16 )
+fontAxis <- list(family="Arial Black", size=14 )
+fontSubtitle <- list(family="Arial", size=12 )
+combined.plot <- combined.plot %>% 
+    layout(title=list(text="Approval Rating By President over the Years",
+                      font=fontTitle, x=0.085, y=1.2),
+           annotations = list(x = 0 , y = 1.03, 
+                              text = "Presidential approval ratings have gone from a volatile rollercoaster like in Truman, Nixon \nor the tenures of both Bush's to a more stable, party-centric evaluation epitomized by Trump's term", 
+                              xref='paper', yref='paper', font=fontSubtitle,
+                              align="left", showarrow = FALSE), 
+           xaxis=list(title=list(text="Date", font=fontAxis)),
+           yaxis=list(title=list(text="Approval", font=fontAxis)),
+           showlegend=FALSE) 
+
+```
+## Add lines at the start of each term
+```{r}
+vline <- function(x) {
+  list(
+    type = "line", 
+    y0 = 0, 
+    y1 = 0.94, 
+    yref = "paper",
+    x0 = x, 
+    x1 = x, 
+    line = list(width=0.8, color = "black", dash="dashdot")
+  )
+}
+shapes <- lapply(df2$term.start,vline)
+combined.plot <- combined.plot %>%
+    layout(yaxis=list(range=c(20,109)),
+           shapes=shapes)
+```
+## Add the President names
+```{r}
+xPres <- as.Date.character(c("2004-6-01", "1990-6-01", "1979-6-01", "1996-6-01",
+                             "1958-6-01", "1975-6-01", "1966-6-01", "1962-6-01", 
+                             "1970-6-01", "2012-6-01", "1984-6-01", "1942-6-01",
+                             "1948-6-01", "2019-6-01"))
+yPres <- c(98)
+labelPres=c("Bush Jr.", "Bush Sr.", "Carter", "Clinton",
+            "Eisenhower", "Ford", "Johnson", "Kennedy",
+            "Nixon", "Obama", "Reagan", "Roosevelt",
+            "Truman", "Trump")
+fontLabel <- list(family="Arial Black", size=10)
+combined.plot <- combined.plot %>% 
+    layout(annotations = list(x = xPres , y = yPres, 
+                              text = labelPres, font=fontLabel, 
+                              xref='data', yref='data',
+                              textangle=-45, showarrow = FALSE)
+    )
+```
+Note: I was not able to set different colors for the label text without calling layout 14 times. Any suggestions?    
+
+## Final: Combined Presidential Story
+September 30, 2021
+Darrell Gerber
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+combined.plot
+```
+
+
